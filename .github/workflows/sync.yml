@@ -1,0 +1,47 @@
+name: sync
+
+on:
+  schedule:
+    - cron: "7 * * * *"      # страховка: раз в час, если цепочка прервалась
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: start
+        run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
+      - name: unpack
+        env:
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+        run: bash secure.sh unpack
+      - name: sync (5.5 h)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+          PUBLIC_LOG: "1"
+          LOOP_MINUTES: "330"
+          SAVE_CMD: "bash secure.sh save"
+        run: python3 sync.py
+      - name: save
+        if: always()
+        env:
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+        run: bash secure.sh save
+      - name: next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # перезапуск цепочки; если упало быстрее 10 минут — не зацикливаемся, ждём часовой страховки
+          if [ $(( $(date +%s) - START )) -gt 600 ]; then gh workflow run sync.yml --ref main; fi
