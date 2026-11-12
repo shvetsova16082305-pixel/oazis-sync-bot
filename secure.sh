@@ -6,7 +6,9 @@ cd "$(dirname "$0")"
 [ -z "$STATE_KEY" ] && [ -f .state_key ] && STATE_KEY=$(cat .state_key) && export STATE_KEY
 enc() { openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:STATE_KEY "$@"; }
 case "$1" in
-  unpack) enc -d -in data.enc | tar -xz ;;
+  unpack) enc -d -in data.enc | tar -xz
+    [ -f site.enc ] && enc -d -in site.enc -out site.json || true ;;
+  pack-site) enc -in site.json -out site.enc ;;
   pack)
     h=$(cat config.json state.json | sha256sum | cut -c1-64)
     [ -f data.enc ] && [ "$h" = "$(cat .data_hash 2>/dev/null)" ] && exit 0

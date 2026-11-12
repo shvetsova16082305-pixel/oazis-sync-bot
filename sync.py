@@ -10,6 +10,15 @@ from datetime import datetime, timezone, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, "config.json"), encoding="utf-8"))
+# site.json (шифруется в site.enc) — настройки сайта методички и дополнительные чаты/проекты.
+# Лежит отдельно от config.json, чтобы работающий бот не затёр его своим сохранением.
+_SITE = os.path.join(HERE, "site.json")
+if os.path.exists(_SITE):
+    _s = json.load(open(_SITE, encoding="utf-8"))
+    CFG["projects"] = _s.get("projects_first", []) + CFG["projects"]
+    CFG.setdefault("source_chats", {}).update(_s.get("source_chats", {}))
+    CFG["feed_only"] = _s.get("feed_only", [])
+    CFG["site"] = _s.get("site", {})
 STATE_PATH = os.path.join(HERE, "state.json")
 STATE = json.load(open(STATE_PATH, encoding="utf-8"))
 TOKEN = os.environ["BOT_TOKEN"].strip()
@@ -162,8 +171,54 @@ def fetch(poll):
     return ups
 
 
+IMPORTANT = re.compile(r"цен|прайс|стоимост|комисс|вознагр|кв\b|акци|скидк|шахмат|фиксац|рассроч|ипотек|"
+                       r"бронир|старт продаж|отдел продаж|\+7|8 ?\(?9\d\d", re.I)
+
+
+def fb_put(path, data, method="PATCH"):
+    """Пишем в общую базу сайта методички. Ошибки базы не должны ломать пересылку."""
+    site = CFG.get("site") or {}
+    if not site.get("firebase") or DRY:
+        return
+    try:
+        req = urllib.request.Request(f"{site['firebase']}{path}.json", method=method,
+                                     data=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=20).read()
+    except Exception as e:
+        log(f"сайт: не записалось ({type(e).__name__})")
+
+
+def push_feed(project, msg, where):
+    """Новое сообщение из чата застройщика -> лента «Новое из чатов» на странице объекта."""
+    site_id = (CFG.get("site") or {}).get("ids", {}).get(project)
+    if not site_id:
+        return
+    chat = msg["chat"]["id"]
+    doc = msg.get("document") or {}
+    text = (msg.get("text") or msg.get("caption") or "").strip()
+    kind = ("file" if doc else "photo" if "photo" in msg else "video" if "video" in msg else "text")
+    if msg.get("media_group_id"):
+        kind = "album" if kind == "photo" else kind
+    key = f"{abs(chat)}_{msg.get('media_group_id') or msg['message_id']}"
+    s = str(chat)
+    link = f"https://t.me/c/{s[4:]}/{msg['message_id']}" if s.startswith("-100") else ""
+    sender = msg.get("from") or {}
+    item = {"t": msg["date"] * 1000, "chat": where, "kind": kind, "link": link,
+            "from": " ".join(x for x in (sender.get("first_name"), sender.get("last_name")) if x)}
+    if text:
+        item["text"] = text[:2500]
+        item["important"] = bool(IMPORTANT.search(text))
+    if doc.get("file_name"):
+        item["file"] = doc["file_name"]
+        item["important"] = True
+    fb_put(f"/feed/{site_id}/{key}", item)
+    fb_put(f"/last/{site_id}", item["t"], method="PUT")
+
+
 def cycle(poll=0):
     updates = fetch(poll)
+    feed_only = set(CFG.get("feed_only", []))
 
     batches = []  # [(project, src_name, from_chat, [ids])]
     for u in updates:
@@ -173,6 +228,11 @@ def cycle(poll=0):
         chat = msg["chat"]["id"]
         if chat == DST:
             learn_topics(msg, STATE["target_topics"])
+            # то, что брокеры сами пишут в топики «Алтай обьекты», тоже попадает на сайт
+            tid = msg.get("message_thread_id") if msg.get("is_topic_message") else None
+            proj = project_of(STATE["target_topics"].get(str(tid), "")) if tid else None
+            if proj and not (msg.get("from") or {}).get("is_bot") and not is_noise(msg):
+                push_feed(proj, msg, "Алтай обьекты")
             continue
         if chat != SRC:
             # отдельный чат с застройщиком: проект — по config.source_chats или по названию чата
@@ -190,6 +250,9 @@ def cycle(poll=0):
                     log(f"чат «{title}» ({chat}): не понял, какой это проект — впиши в config.source_chats")
                 continue
             src_name = f"чат {title}"
+            push_feed(proj, msg, title)
+            if proj in feed_only:
+                continue  # Шерегеш и т.п.: только на сайт, в «Алтай обьекты» не переносим
             key = (proj, src_name, chat)
         else:
             learn_topics(msg, STATE["source_topics"])
@@ -200,6 +263,7 @@ def cycle(poll=0):
             if not proj:
                 continue
             src_name = STATE["source_topics"][str(tid)]
+            push_feed(proj, msg, f"Горные кластеры · {src_name}")
             key = (proj, src_name, SRC)
         if batches and tuple(batches[-1][:3]) == key:
             batches[-1][3].append(msg["message_id"])

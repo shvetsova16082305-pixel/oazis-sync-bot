@@ -3,3 +3,4 @@ config.json
 state.json
 .state_key
 .data_hash
+site.json
