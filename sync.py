@@ -6,6 +6,7 @@ OazisSyncBot: переносит новые материалы из «Объек
 Работает по расписанию в GitHub Actions; состояние хранится в state.json.
 """
 import json, os, re, sys, time, urllib.request, urllib.error
+import autoupdate
 from datetime import datetime, timezone, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -19,6 +20,7 @@ if os.path.exists(_SITE):
     CFG.setdefault("source_chats", {}).update(_s.get("source_chats", {}))
     CFG["feed_only"] = _s.get("feed_only", [])
     CFG["feed_only_chats"] = _s.get("feed_only_chats", [])
+    CFG["multi_project_chats"] = _s.get("multi_project_chats", [])
     CFG["site"] = _s.get("site", {})
 STATE_PATH = os.path.join(HERE, "state.json")
 STATE = json.load(open(STATE_PATH, encoding="utf-8"))
@@ -190,8 +192,10 @@ def fb_put(path, data, method="PATCH"):
         log(f"сайт: не записалось ({type(e).__name__})")
 
 
-def push_feed(project, msg, where):
+def push_feed(project, msg, where, from_target=False):
     """Новое сообщение из чата застройщика -> лента «Новое из чатов» на странице объекта."""
+    if re.search(r"oazis|оазис", where, re.I):
+        where = "чат застройщика"  # внутренние чаты Oazis на сайте не называем
     site_id = (CFG.get("site") or {}).get("ids", {}).get(project)
     if not site_id:
         return
@@ -215,6 +219,19 @@ def push_feed(project, msg, where):
         item["important"] = True
     fb_put(f"/feed/{site_id}/{key}", item)
     fb_put(f"/last/{site_id}", item["t"], method="PUT")
+    # раскладываем по разделам карточки (цена, комиссия, оплата, фиксация, файлы, ОП)
+    try:
+        generic = {"горный", "манжерок", "алтай"}  # встречаются в «Горный Алтай» и т.п.
+        own = [norm(k) for p in projects() if p["name"] == project for k in p["kw"]] + [norm(project)]
+        other = [norm(k) for p in projects() if p["name"] != project for k in p["kw"]
+                 if norm(k) not in generic and not any(norm(k) in o or o in norm(k) for o in own)]
+        multi = str(msg["chat"]["id"]) in CFG.get("multi_project_chats", [])
+        changed = autoupdate.apply(CFG["site"]["firebase"], site_id, msg, where, link, from_target, own, other, multi)
+        if changed:
+            fb_put(f"/feed/{site_id}/{key}", {"applied": changed})
+            log(f"сайт: «{project}» — обновлено: {', '.join(changed)}")
+    except Exception as e:
+        log(f"сайт: автообновление не прошло ({type(e).__name__})")
 
 
 def cycle(poll=0):
@@ -233,7 +250,7 @@ def cycle(poll=0):
             tid = msg.get("message_thread_id") if msg.get("is_topic_message") else None
             proj = project_of(STATE["target_topics"].get(str(tid), "")) if tid else None
             if proj and not (msg.get("from") or {}).get("is_bot") and not is_noise(msg):
-                push_feed(proj, msg, "Алтай обьекты")
+                push_feed(proj, msg, "Алтай обьекты", from_target=True)
             continue
         if chat != SRC:
             # отдельный чат с застройщиком: проект — по config.source_chats или по названию чата
