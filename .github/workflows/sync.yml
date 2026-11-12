@@ -25,6 +25,8 @@ jobs:
         env:
           STATE_KEY: ${{ secrets.STATE_KEY }}
         run: bash secure.sh unpack
+      - name: libs
+        run: pip install --quiet openpyxl   # чтение xlsx-шахматок застройщиков
       - name: sync (5.5 h)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}

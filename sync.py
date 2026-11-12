@@ -7,6 +7,38 @@ OazisSyncBot: переносит новые материалы из «Объек
 """
 import json, os, re, sys, time, urllib.request, urllib.error
 import autoupdate
+import minlot
+
+MINLOT_EVERY = 6 * 3600  # как часто сверять минимальные лоты с шахматками
+
+
+def maybe_minlot():
+    site = CFG.get("site") or {}
+    if DRY or not site.get("firebase") or time.time() - STATE.get("minlot_at", 0) < MINLOT_EVERY:
+        return
+    STATE["minlot_at"] = int(time.time())
+    minlot.run_all(site["firebase"], autoupdate._req, log)
+
+
+def chess_from_chat(project, msg):
+    """Новая xlsx-шахматка Cosmos в чате -> сразу пересчитать минимальный лот."""
+    doc = msg.get("document") or {}
+    name = (doc.get("file_name") or "").lower()
+    site = CFG.get("site") or {}
+    if project != "Бирюзовая Катунь" or "шахмат" not in name or not name.endswith(".xlsx") or not site.get("firebase"):
+        return
+    try:
+        f = api("getFile", file_id=doc["file_id"])
+        path = f["result"]["file_path"]
+        data = urllib.request.urlopen(f"https://api.telegram.org/file/bot{TOKEN}/{path}", timeout=60).read()
+        res = minlot.cosmos_xlsx(data)
+        if res:
+            s = str(msg["chat"]["id"])
+            res["url"] = f"https://t.me/c/{s[4:]}/{msg['message_id']}" if s.startswith("-100") else ""
+            if minlot.write(site["firebase"], autoupdate._req, "katun", res, "шахматка из чата"):
+                log(f"сайт: мин. лот Cosmos → {minlot.fmt(res['price'])}")
+    except Exception as e:
+        log(f"сайт: шахматка Cosmos не прочиталась ({type(e).__name__})")
 from datetime import datetime, timezone, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -219,6 +251,7 @@ def push_feed(project, msg, where, from_target=False):
         item["important"] = True
     fb_put(f"/feed/{site_id}/{key}", item)
     fb_put(f"/last/{site_id}", item["t"], method="PUT")
+    chess_from_chat(project, msg)
     # раскладываем по разделам карточки (цена, комиссия, оплата, фиксация, файлы, ОП)
     try:
         generic = {"горный", "манжерок", "алтай"}  # встречаются в «Горный Алтай» и т.п.
@@ -235,6 +268,7 @@ def push_feed(project, msg, where, from_target=False):
 
 
 def cycle(poll=0):
+    maybe_minlot()
     updates = fetch(poll)
     feed_only = set(CFG.get("feed_only", []))
 
