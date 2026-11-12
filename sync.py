@@ -18,6 +18,7 @@ if os.path.exists(_SITE):
     CFG["projects"] = _s.get("projects_first", []) + CFG["projects"]
     CFG.setdefault("source_chats", {}).update(_s.get("source_chats", {}))
     CFG["feed_only"] = _s.get("feed_only", [])
+    CFG["feed_only_chats"] = _s.get("feed_only_chats", [])
     CFG["site"] = _s.get("site", {})
 STATE_PATH = os.path.join(HERE, "state.json")
 STATE = json.load(open(STATE_PATH, encoding="utf-8"))
@@ -251,7 +252,7 @@ def cycle(poll=0):
                 continue
             src_name = f"чат {title}"
             push_feed(proj, msg, title)
-            if proj in feed_only:
+            if proj in feed_only or str(chat) in CFG.get("feed_only_chats", []):
                 continue  # Шерегеш и т.п.: только на сайт, в «Алтай обьекты» не переносим
             key = (proj, src_name, chat)
         else:
