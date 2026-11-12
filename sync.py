@@ -53,6 +53,7 @@ if os.path.exists(_SITE):
     CFG["feed_only"] = _s.get("feed_only", [])
     CFG["feed_only_chats"] = _s.get("feed_only_chats", [])
     CFG["multi_project_chats"] = _s.get("multi_project_chats", [])
+    CFG["chat_alt_projects"] = _s.get("chat_alt_projects", {})
     CFG["site"] = _s.get("site", {})
 STATE_PATH = os.path.join(HERE, "state.json")
 STATE = json.load(open(STATE_PATH, encoding="utf-8"))
@@ -294,6 +295,11 @@ def cycle(poll=0):
             fname = (msg.get("document") or {}).get("file_name", "")
             if fname and project_of(fname):
                 proj = project_of(fname)
+            # один застройщик — несколько объектов в чате (УГМК: Кедровый + Шермонт): смотрим на текст
+            body = msg.get("text") or msg.get("caption") or ""
+            for alt in CFG.get("chat_alt_projects", {}).get(str(chat), []):
+                if project_of(body) == alt or project_of(fname) == alt:
+                    proj = alt
             if msg["chat"]["type"] == "private" or is_noise(msg, CFG.get("chat_min_text_length", 120)):
                 continue
             if not proj:
