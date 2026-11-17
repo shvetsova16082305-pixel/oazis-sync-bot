@@ -53,20 +53,23 @@ def selfstroit():
     except ValueError:
         pass
     t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html.unescape(raw)))
-    lots = []
+    lots, resale = [], []
     for block in t.split("ГОРОД ГОР")[1:]:
         head = block.split("просмотр")[0]
-        if "перепродаж" in head:
-            continue
         p = re.search(r"(\d{1,3}(?: \d{3}){2}) ₽", head)
         a = re.search(r"Площадь м² ([\d.]+)", head)
         r = re.search(r"Комнат (\S+)", head)
+        f = re.search(r"Этаж (\d+)", head)
         if p:
-            lots.append((_rub(p.group(1)), f"{r.group(1) if r else '?'}-комн. {a.group(1).replace('.', ',') if a else '?'} м²"))
+            desc = f"{r.group(1) if r else '?'}-комн. {a.group(1).replace('.', ',') if a else '?'} м²" + (f", {f.group(1)} этаж" if f else "")
+            (resale if "перепродаж" in head else lots).append((_rub(p.group(1)), desc))
     if not lots:
         return None
     price, desc = min(lots)
-    return {"price": price, "desc": desc, "url": "https://selfstroit.ru/search/?view=tile&kind=flats&project%5B%5D=10&sort=ASC"}
+    res = {"price": price, "desc": desc, "url": "https://selfstroit.ru/search/?view=tile&kind=flats&project%5B%5D=10&sort=ASC"}
+    if resale:
+        res["resale"] = {"price": min(resale)[0], "desc": min(resale)[1]}
+    return res
 
 
 def rizalta():
@@ -108,6 +111,8 @@ def write(base, req, site_id, res, source="шахматка"):
     if not o or not res:
         return False
     text = f"мин. лот {fmt(res['price'])}"
+    if res.get("resale"):
+        text += f" · перепродажа от {fmt(res['resale']['price'])}"
     old = (o.get("minlot") or {}).get("price")
     if old == res["price"] and o.get("price") == text:
         req(base, f"/objects/{site_id}/minlot/checked", "PUT", int(time.time() * 1000))
@@ -115,7 +120,7 @@ def write(base, req, site_id, res, source="шахматка"):
     now = int(time.time() * 1000)
     req(base, f"/history/{site_id}", "POST", {"at": now, "who": f"до обновления мин. лота ({source})", "prev": o})
     patch = {"price": text,
-             "minlot": {"price": res["price"], "desc": res.get("desc", ""), "url": res.get("url", ""), "at": now, "checked": now, "source": source},
+             "minlot": {"price": res["price"], "desc": res.get("desc", ""), "url": res.get("url", ""), "at": now, "checked": now, "source": source, "resale": res.get("resale")},
              "autoFields/price": {"t": now, "chat": source, "link": res.get("url", ""), "old": o.get("price", "")},
              "upd": {"at": now, "who": f"бот: мин. лот с шахматки"}}
     req(base, f"/objects/{site_id}", "PATCH", patch)
