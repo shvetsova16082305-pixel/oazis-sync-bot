@@ -3,6 +3,7 @@
 Работает без входа в кабинеты: берём только открытые шахматки.
   Карлуу, УМУН  — md.rclick.ru (каталог «Мой Дом», сортировка по цене)
   Город Гор     — selfstroit.ru (поиск квартир, без перепродаж)
+  Грушевый цвет — grushevyi.kriogen.thedatum.ai/data/lots.json (апарт-отель)
   Ризалта       — client.rizaltaservice.ru/api/lots (status = available)
   Cosmos Stay   — xlsx-шахматка 2 очереди, когда её присылают в чат (cosmos_xlsx)
 Результат пишется в карточку: поле price + autoFields.price + minlot, старая версия — в историю.
@@ -102,7 +103,27 @@ def cosmos_xlsx(data):
     return {"price": price, "desc": desc + " (шахматка 2 очереди)"}
 
 
-SOURCES = {"karluu": lambda: mydom(284), "umun": lambda: mydom(289), "gorod-gor": selfstroit, "rizalta": rizalta}
+def grush():
+    """Грушевый цвет: открытая шахматка апарт-отеля (CSV внутри lots.json). Свободен = пустой статус и «Открыт к продаже: да»."""
+    import csv
+    d = json.loads(_get("https://grushevyi.kriogen.thedatum.ai/data/lots.json"))
+    lots = []
+    for r in csv.reader(io.StringIO(d.get("csv", ""))):
+        if len(r) > 9 and r[1].strip().isdigit() and not r[0].strip() and r[9].strip().lower() == "да":
+            p = int(re.sub(r"\D", "", r[4]) or 0)
+            if p:
+                kind = "студия" if "студ" in r[3] else f"{r[3].strip()}-спальн."
+                lots.append((p, f"апартаменты: {kind} {r[2].strip()} м², №{r[1].strip()}"))
+    if not lots:
+        return None
+    price, desc = min(lots)
+    upd = d.get("updatedAt", "")[:10]
+    if upd:
+        desc += f" (шахматка от {upd[8:10]}.{upd[5:7]})"
+    return {"price": price, "desc": desc, "url": "https://grushevyi.kriogen.thedatum.ai/"}
+
+
+SOURCES = {"karluu": lambda: mydom(284), "umun": lambda: mydom(289), "gorod-gor": selfstroit, "rizalta": rizalta, "grush": grush}
 
 
 def write(base, req, site_id, res, source="шахматка"):
