@@ -4,6 +4,7 @@
   Карлуу, УМУН  — md.rclick.ru (каталог «Мой Дом», сортировка по цене)
   Город Гор     — selfstroit.ru (поиск квартир, без перепродаж)
   Грушевый цвет — grushevyi.kriogen.thedatum.ai/data/lots.json (апарт-отель)
+  Кедровый      — ugmkstroy.ru/projects/kedrovy («Минимальная цена»)
   Ризалта       — client.rizaltaservice.ru/api/lots (status = available)
   Cosmos Stay   — xlsx-шахматка 2 очереди, когда её присылают в чат (cosmos_xlsx)
 Результат пишется в карточку: поле price + autoFields.price + minlot, старая версия — в историю.
@@ -123,7 +124,20 @@ def grush():
     return {"price": price, "desc": desc, "url": "https://grushevyi.kriogen.thedatum.ai/"}
 
 
-SOURCES = {"karluu": lambda: mydom(284), "umun": lambda: mydom(289), "gorod-gor": selfstroit, "rizalta": rizalta, "grush": grush}
+def ugmk(slug):
+    """УГМК-Строй: на странице проекта блок «Минимальная цена от … ₽» + сводка по домам."""
+    url = f"https://ugmkstroy.ru/projects/{slug}"
+    s = html.unescape(_get(url))
+    m = re.search(r"Минимальная цена</div>\s*<div[^>]*>\s*от ([\d  ]+) ₽", s)
+    if not m:
+        return None
+    t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s))
+    n = sum(int(x) for x in re.findall(r"(\d+) квартир\w* в продаже", t))
+    return {"price": _rub(m.group(1)), "url": url,
+            "desc": "сайт застройщика" + (f", в продаже {n} квартир" if n else "")}
+
+
+SOURCES = {"karluu": lambda: mydom(284), "umun": lambda: mydom(289), "gorod-gor": selfstroit, "rizalta": rizalta, "grush": grush, "kedrovy": lambda: ugmk("kedrovy")}
 
 
 def write(base, req, site_id, res, source="шахматка"):
