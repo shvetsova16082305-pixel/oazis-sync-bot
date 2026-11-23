@@ -5,7 +5,7 @@ OazisSyncBot: переносит новые материалы из «Объек
 Запуск: BOT_TOKEN=... python sync.py        (DRY_RUN=1 — только показать, ничего не отправлять)
 Работает по расписанию в GitHub Actions; состояние хранится в state.json.
 """
-import json, os, re, sys, time, urllib.request, urllib.error
+import hashlib, json, os, re, sys, time, urllib.request, urllib.error
 import autoupdate
 import minlot
 
@@ -170,6 +170,77 @@ def resolve(src_thread):
     return proj, target_thread(proj)
 
 
+# ---------- защита от дублей ----------
+# Застройщик часто шлёт одно и то же в несколько чатов (Oazis и Алтазия). В топик и на сайт идёт первая копия.
+SEEN_FILE_DAYS = 30   # тот же файл/фото/видео по проекту считаем дублем 30 дней
+SEEN_TEXT_DAYS = 3    # тот же текст — 3 дня: застройщик может повторить объявление позже осознанно
+MSG_MARKS = {}        # (чат, id сообщения) -> отметки, чтобы снять их, если копирование не удалось
+SKIPPED = {}          # (откуда, проект) -> сколько дублей пропущено за цикл
+
+
+def fingerprints(msg):
+    """Отпечатки сообщения: одинаковы у пересланного и у заново загруженного файла."""
+    out = []
+    for kind in ("document", "video", "audio", "voice", "video_note", "animation"):
+        f = msg.get(kind)
+        if f:
+            out.append(f"id:{f.get('file_unique_id')}")
+            if f.get("file_size"):
+                out.append(f"{kind}:{norm(f.get('file_name', ''))}:{f['file_size']}:{f.get('duration', '')}")
+    if msg.get("photo"):
+        f = msg["photo"][-1]
+        out.append(f"id:{f.get('file_unique_id')}")
+        if f.get("file_size"):
+            out.append(f"photo:{f.get('width')}x{f.get('height')}:{f['file_size']}")
+    if out:
+        days = SEEN_FILE_DAYS
+    elif msg.get("text"):
+        out.append("text:" + re.sub(r"[^\wа-я]+", "", norm(msg["text"])))
+        days = SEEN_TEXT_DAYS
+    else:
+        return [], 0
+    return [hashlib.sha1(x.encode("utf-8")).hexdigest()[:16] for x in out], days
+
+
+def remember(project, msg):
+    marks, days = fingerprints(msg)
+    box = STATE.setdefault("seen", {}).setdefault(project, {})
+    until = int(time.time() + days * 86400)
+    for m in marks:
+        box[m] = max(box.get(m, 0), until)
+    return marks
+
+
+def is_duplicate(project, msg, src_name):
+    """True — такое по проекту уже было. Иначе запоминаем и пропускаем дальше."""
+    marks, _ = fingerprints(msg)
+    box = STATE.setdefault("seen", {}).get(project, {})
+    now = time.time()
+    if any(box.get(m, 0) > now for m in marks):
+        key = (src_name, project)
+        SKIPPED[key] = SKIPPED.get(key, 0) + 1
+        return True
+    MSG_MARKS[(msg["chat"]["id"], msg["message_id"])] = (project, remember(project, msg))
+    return False
+
+
+def forget(from_chat, ids):
+    """Копирование не удалось: снимаем отметки, чтобы файл мог прийти из другого чата."""
+    for i in ids:
+        project, marks = MSG_MARKS.pop((from_chat, i), (None, []))
+        for m in marks:
+            STATE.get("seen", {}).get(project, {}).pop(m, None)
+
+
+def prune_seen():
+    now = time.time()
+    seen = STATE.setdefault("seen", {})
+    for project in list(seen):
+        seen[project] = {m: t for m, t in seen[project].items() if t > now}
+        if not seen[project]:
+            del seen[project]
+
+
 def copy(ids, thread, project, src_name, from_chat=None):
     ids = sorted(set(ids))
     from_chat = from_chat or SRC
@@ -182,6 +253,8 @@ def copy(ids, thread, project, src_name, from_chat=None):
         if not r.get("ok"):
             desc = r.get("description", "")
             log(f"ошибка копирования в «{project}»: {desc}")
+            if "thread not found" not in desc.lower():
+                forget(from_chat, ids[i:i + 100])
             if "thread not found" in desc.lower():
                 STATE["target_topics"].pop(str(thread), None)
                 return False
@@ -286,6 +359,7 @@ def cycle(poll=0):
             proj = project_of(STATE["target_topics"].get(str(tid), "")) if tid else None
             if proj and not (msg.get("from") or {}).get("is_bot") and not is_noise(msg):
                 push_feed(proj, msg, "Алтай обьекты", from_target=True)
+                remember(proj, msg)  # уже лежит в топике — из чатов застройщика второй раз не несём
             continue
         if chat != SRC:
             # отдельный чат с застройщиком: проект — по config.source_chats или по названию чата
@@ -308,6 +382,8 @@ def cycle(poll=0):
                     log(f"чат «{title}» ({chat}): не понял, какой это проект — впиши в config.source_chats")
                 continue
             src_name = f"чат {title}"
+            if is_duplicate(proj, msg, src_name):
+                continue
             push_feed(proj, msg, title)
             if proj in feed_only or str(chat) in CFG.get("feed_only_chats", []):
                 continue  # Шерегеш и т.п.: только на сайт, в «Алтай обьекты» не переносим
@@ -321,6 +397,8 @@ def cycle(poll=0):
             if not proj:
                 continue
             src_name = STATE["source_topics"][str(tid)]
+            if is_duplicate(proj, msg, src_name):
+                continue
             push_feed(proj, msg, f"Горные кластеры · {src_name}")
             key = (proj, src_name, SRC)
         if batches and tuple(batches[-1][:3]) == key:
@@ -343,6 +421,11 @@ def cycle(poll=0):
         log(f"ждёт: {len(ids)} сообщ. «{src_name}» — в «Алтай обьекты» пока не найден топик «{proj}»")
         still.append({"project": proj, "ids": ids, "src": src_name, "chat": chat, "since": int(time.time())})
     STATE["pending"] = still
+    for (src_name, proj), n in SKIPPED.items():
+        log(f"дубль пропущен: {n} сообщ. «{src_name}» → «{proj}»")
+    SKIPPED.clear()
+    MSG_MARKS.clear()
+    prune_seen()
 
     if updates and not DRY:
         STATE["last_update_id"] = updates[-1]["update_id"]
